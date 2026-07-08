@@ -1,105 +1,99 @@
 <?php
 require_once 'config.php';
 
-// Sécurité : Vérifier que l'utilisateur est connecté (Admin ou Agent)
-if (!isset($_SESSION['id_admin']) && !isset($_SESSION['id_agent'])) {
-    die("Accès refusé. Veuillez vous connecter.");
+// Vérification de la session de l'agent
+if (!isset($_SESSION['id_agent'])) {
+    header("Location: connexion.php");
+    exit;
 }
 
-// Détermination de la période à calculer (par défaut le mois et l'année en cours)
-$mois = isset($_GET['mois']) ? str_pad($_GET['mois'], 2, "0", STR_PAD_LEFT) : date('m');
-$annee = isset($_GET['annee']) ? $_GET['annee'] : date('Y');
+$id_agent = (int)$_SESSION['id_agent'];
+$mois_actuel = date('m');
+$annee_actuelle = date('Y');
 
 try {
-    // 1. COMPTER LE NOMBRE TOTAL DE JOURS OUVRABLES DANS LE MOIS
-    $stmtOuvrables = $db->prepare("
-        SELECT COUNT(*) AS total_ouvrables 
-        FROM journee 
-        WHERE MONTH(date_jour) = :mois 
-          AND YEAR(date_jour) = :annee 
-          AND est_ouvrable = 1
-    ");
-    $stmtOuvrables->execute([':mois' => $mois, ':annee' => $annee]);
-    $resOuvrables = $stmtOuvrables->fetch();
-    $J_ouvrables = (int)$resOuvrables['total_ouvrables'];
+    // 1. Récupérer les informations de salaire fixe de l'agent
+    $stmtAgent = $db->prepare("SELECT nom_agent, sal_base_agent FROM agent WHERE id_agent = :id");
+    $stmtAgent->execute([':id' => $id_agent]);
+    $agent = $stmtAgent->fetch();
 
-    // S'il n'y a pas de jours ouvrables enregistrés, on arrête le script proprement
-    if ($J_ouvrables === 0) {
-        echo "<p>Aucune activité ouvrable n'a été enregistrée pour la période : $mois/$annee.</p>";
-        exit;
+    // 2. Compter le nombre de journées ouvrables ce mois-ci
+    $stmtTotalJours = $db->prepare("SELECT COUNT(*) FROM journee WHERE MONTH(date_jour) = :mois AND YEAR(date_jour) = :annee AND est_ouvrable = 1");
+    $stmtTotalJours->execute([':mois' => $mois_actuel, ':annee' => $annee_actuelle]);
+    $total_jours_ouvrables = (int)$stmtTotalJours->fetchColumn();
+
+    // 3. Compter le nombre de présences réelles de l'agent ce mois-ci
+    $stmtPresences = $db->prepare("SELECT COUNT(*) FROM presence WHERE id_agent = :id AND MONTH(date_jour) = :mois AND YEAR(date_jour) = :annee");
+    $stmtPresences->execute([':id' => $id_agent, ':mois' => $mois_actuel, ':annee' => $annee_actuelle]);
+    $presences_agent = (int)$stmtPresences->fetchColumn();
+
+    // 4. Calcul du prorata
+    $salaire_final = 0;
+    if ($total_jours_ouvrables > 0) {
+        $salaire_final = ($agent['sal_base_agent'] / $total_jours_ouvrables) * $presences_agent;
     }
 
-    // 2. PRÉPARER LA REQUÊTE DE SÉLECTION DU PERSONNEL
-    // Si c'est l'Admin, il voit tout le monde. Si c'est un Agent, il ne voit que son salaire.
-    if (isset($_SESSION['id_admin'])) {
-        $stmtAgents = $db->query("SELECT id_agent, nom_agent, sal_base_agent FROM agent WHERE statut_banni = 0");
-        $liste_agents = $stmtAgents->fetchAll();
-    } else {
-        $stmtAgents = $db->prepare("SELECT id_agent, nom_agent, sal_base_agent FROM agent WHERE id_agent = :id AND statut_banni = 0");
-        $stmtAgents->execute([':id' => $_SESSION['id_agent']]);
-        $liste_agents = $stmtAgents->fetchAll();
-    }
-
-    // 3. CALCUL ET TRAITEMENT LOGIQUE POUR CHAQUE AGENT
-    $fiche_paie_mensuelle = [];
-
-    foreach ($liste_agents as $agent) {
-        $id_agent = $agent['id_agent'];
-        $nom_agent = $agent['nom_agent'];
-        $S_base = (float)$agent['sal_base_agent'];
-
-        // Compter les présences effectives de l'agent sur les jours ouvrables du mois
-        $stmtPresents = $db->prepare("
-            SELECT COUNT(*) AS total_presents 
-            FROM presence p
-            JOIN journee j ON p.date_jour = j.date_jour
-            WHERE p.id_agent = :id_agent 
-              AND MONTH(p.date_jour) = :mois 
-              AND YEAR(p.date_jour) = :annee 
-              AND p.est_present = 1
-              AND j.est_ouvrable = 1
-        ");
-        $stmtPresents->execute([
-            ':id_agent' => $id_agent,
-            ':mois'     => $mois,
-            ':annee'    => $annee
-        ]);
-        $resPresents = $stmtPresents->fetch();
-        $J_presents = (int)$resPresents['total_presents'];
-
-        // Application de la formule : Taux de participation (T)
-        $T = ($J_presents / $J_ouvrables) * 100;
-
-        // Logique de régulation et attribution de la prime d'assiduité (2%)
-        $prime = 0.00;
-        $prime_accordee = false;
-
-        if ($J_presents === $J_ouvrables) {
-            $prime = $S_base * 0.02; // Calcul des 2% de prime d'assiduité
-            $prime_accordee = true;
-        }
-
-        // Formule finale du Salaire Réel calculé au prorata
-        $S_final = ($S_base * ($J_presents / $J_ouvrables)) + $prime;
-
-        // Structure des données prêtes pour l'affichage Front-End (HTML/Vue)
-        $fiche_paie_mensuelle[] = [
-            'id_agent'       => $id_agent,
-            'nom_agent'      => $nom_agent,
-            'salaire_base'   => $S_base,
-            'jours_presents' => $J_presents,
-            'jours_ouvrables'=> $J_ouvrables,
-            'taux_assiduite' => round($T, 2),
-            'prime'          => $prime,
-            'prime_badge'    => $prime_accordee,
-            'salaire_final'  => round($S_final, 2)
-        ];
-    }
-
-    // Pour des besoins de débogage ou d'API asynchrone (Fetch/AJAX), on peut retourner du JSON
-    // Si ce script est inclus directement dans une page de rapport, la variable $fiche_paie_mensuelle est exploitable.
-    
 } catch (PDOException $e) {
-    die("Erreur lors du calcul des fiches de paie : " . $e->getMessage());
+    die("Erreur de calcul des émoluments : " . $e->getMessage());
 }
 ?>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>BIOGAZELCO — Bulletin de Paie</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; color: #0f172a; padding: 40px; }
+        .invoice-box { max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.02); }
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #10b981; padding-bottom: 20px; margin-bottom: 20px; }
+        .meta-table { width: 100%; margin-top: 20px; border-collapse: collapse; }
+        .meta-table td { padding: 12px; border-bottom: 1px solid #edf2f7; }
+        .total-row { font-weight: bold; color: #10b981; font-size: 18px; }
+        .btn-back { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #0f172a; color: white; text-decoration: none; border-radius: 6px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+<div class="invoice-box">
+    <div class="header">
+        <div>
+            <h2 style="margin:0; color:#0f172a;">BIOGAZELCO SARLU</h2>
+            <small>Kinshasa, RDC</small>
+        </div>
+        <div style="text-align: right;">
+            <strong>Fiche de Paie</strong><br>
+            Période : <?php echo date('m/Y'); ?>
+        </div>
+    </div>
+
+    <p><strong>Collaborateur :</strong> <?php echo htmlspecialchars($agent['nom_agent']); ?></p>
+
+    <?php if ($total_jours_ouvrables === 0): ?>
+        <p style="color: #64748b; text-align: center; padding: 20px;">Aucune activité ouvrable n'a été enregistrée pour cette période.</p>
+    <?php else: ?>
+        <table class="meta-table">
+            <tr>
+                <td>Salaire Mensuel de Base Brut</td>
+                <td style="text-align: right;"><?php echo number_format($agent['sal_base_agent'], 2, ',', ' '); ?> USD</td>
+            </tr>
+            <tr>
+                <td>Jours Ouvrés Actifs de l'Entreprise</td>
+                <td style="text-align: right;"><?php echo $total_jours_ouvrables; ?> jours</td>
+            </tr>
+            <tr>
+                <td>Vos Présences Effectives Enregistrées</td>
+                <td style="text-align: right; text-weight: 600; color: #15803d;"><?php echo $presences_agent; ?> jours</td>
+            </tr>
+            <tr class="total-row">
+                <td>Net À Percevoir (Prorata)</td>
+                <td style="text-align: right;"><?php echo number_format($salaire_final, 2, ',', ' '); ?> USD</td>
+            </tr>
+        </table>
+    <?php endif; ?>
+
+    <a href="dashboard_agent.php" class="btn-back">Retour au Tableau de Bord</a>
+</div>
+
+</body>
+</html>

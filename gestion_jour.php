@@ -1,50 +1,65 @@
 <?php
 require_once 'config.php';
 
-// Sécurité : On vérifie que c'est bien l'administrateur qui fait l'action
-// (Supposons que $_SESSION['role'] est défini lors de la connexion)
-if (!isset($_SESSION['id_admin'])) {
-    die("Accès refusé. Vous devez être connecté en tant qu'administrateur.");
-}
+$id_agent = isset($_SESSION['id_agent']) ? (int)$_SESSION['id_agent'] : null;
+$id_admin = isset($_SESSION['id_admin']) ? (int)$_SESSION['id_admin'] : null;
 
-// Récupération de la date (soit du jour même, soit choisie via un calendrier)
-$date_action = isset($_POST['date_jour']) ? $_POST['date_jour'] : date('Y-m-d');
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $action = $_POST['action'];
 
-// Si la case "est_ouvrable" est cochée dans le formulaire, vaut 1, sinon 0
-$est_ouvrable = isset($_POST['est_ouvrable']) ? 1 : 0;
+    // =================================================================
+    // CAS 1 : L'AGENT SIGNALER SA PRÉSENCE
+    // =================================================================
+    if ($action === 'pointer' && $id_agent) {
+        try {
+            // ÉTAPE A : Vérifier si la journée a été ouverte par l'administration
+            $checkJour = $db->prepare("SELECT COUNT(*) FROM journee WHERE date_jour = CURDATE()");
+            $checkJour->execute();
+            $journee_ouverte = $checkJour->fetchColumn();
 
-try {
-    // DÉBUT DE LA TRANSACTION : Tout réussit ou tout s'annule
-    $db->beginTransaction();
+            if ($journee_ouverte == 0) {
+                // Si la journée n'est pas ouverte, on stoppe proprement pour éviter la violation de clé étrangère
+                die("<script>
+                    alert('Opération impossible : La direction n\'a pas encore activé la journée de travail pour aujourd\'hui.');
+                    window.location.href='dashboard_agent.php';
+                </script>");
+            }
 
-    // 1. On insère ou on met à jour le statut de la journée dans la table 'journee'
-    $stmtJour = $db->prepare("
-        INSERT INTO journee (date_jour, est_ouvrable) 
-        VALUES (:date_jour, :est_ouvrable)
-        ON DUPLICATE KEY UPDATE est_ouvrable = :est_ouvrable
-    ");
-    $stmtJour->execute([
-        ':date_jour'    => $date_action,
-        ':est_ouvrable' => $est_ouvrable
-    ]);
-
-    // 2. LOGIQUE MÉTIER : Si le jour devient NON OUVRABLE, on purge les présences associées
-    if ($est_ouvrable === 0) {
-        $stmtPurge = $db->prepare("DELETE FROM presence WHERE date_jour = :date_jour");
-        $stmtPurge->execute([':date_jour' => $date_action]);
-        $message_log = "Journée définie comme NON OUVRABLE. Toutes les présences de ce jour ont été purgées.";
-    } else {
-        $message_log = "Journée définie comme OUVRABLE. Prête pour le pointage des agents.";
+            // ÉTAPE B : Vérifier si l'agent a déjà pointé
+            $checkPres = $db->prepare("SELECT COUNT(*) FROM presence WHERE id_agent = :id AND date_jour = CURDATE()");
+            $checkPres->execute([':id' => $id_agent]);
+            $deja_pointe = $checkPres->fetchColumn();
+            
+            if ($deja_pointe == 0) {
+                $stmt = $db->prepare("INSERT INTO presence (id_agent, date_jour) VALUES (:id, CURDATE())");
+                $stmt->execute([':id' => $id_agent]);
+            }
+            
+            header("Location: dashboard_agent.php");
+            exit;
+        } catch (PDOException $e) {
+            die("Erreur technique de pointage : " . $e->getMessage());
+        }
     }
 
-    // Validation définitive de la transaction en BDD
-    $db->commit();
-    
-    echo json_encode(["status" => "success", "message" => $message_log]);
-
-} catch (PDOException $e) {
-    // En cas de bug, on annule tout (Rollback) pour éviter les incohérences de données
-    $db->rollBack();
-    echo json_encode(["status" => "error", "message" => "Échec de l'opération : " . $e->getMessage()]);
+    // =================================================================
+    // CAS 2 : L'ADMINISTRATEUR ACTIVE OU PURGE LA JOURNÉE
+    // =================================================================
+    if ($id_admin) {
+        try {
+            if ($action === 'ouvrir') {
+                $stmt = $db->prepare("INSERT IGNORE INTO journee (date_jour, est_ouvrable) VALUES (CURDATE(), 1)");
+                $stmt->execute();
+            } elseif ($action === 'purger') {
+                $db->query("DELETE FROM presence");
+                $db->query("DELETE FROM journee");
+            }
+            header("Location: dashboard_admin.php");
+            exit;
+        } catch (PDOException $e) {
+            die("Erreur d'exploitation administrative : " . $e->getMessage());
+        }
+    }
 }
-?>
+
+echo "Action non autorisée.";

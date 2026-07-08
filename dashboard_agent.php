@@ -1,30 +1,33 @@
 <?php
 require_once 'config.php';
 
-// Sécurité : Vérification de la session agent
+// Sécurité : On s'assure qu'un agent est connecté
 if (!isset($_SESSION['id_agent'])) {
     header("Location: connexion.php");
     exit;
 }
 
-$id_agent = $_SESSION['id_agent'];
+$id_agent = (int)$_SESSION['id_agent'];
 $nom_agent = $_SESSION['nom_agent'];
-$id_dept = $_SESSION['id_dept'];
-
-$message_action = "";
+$id_dept = (int)$_SESSION['id_dept'];
 
 try {
-    // 1. Récupération des informations financières et personnelles de l'agent
-    $stmtAgent = $db->prepare("SELECT a.*, d.nom_dept FROM agent a JOIN departement d ON a.id_dept = d.id_dept WHERE a.id_agent = :id");
-    $stmtAgent->execute([':id' => $id_agent]);
-    $agentInfo = $stmtAgent->fetch();
+    // 1. Récupérer le nom du département de l'agent
+    $stmtDept = $db->prepare("SELECT nom_dept FROM departement WHERE id_dept = :id_dept");
+    $stmtDept->execute([':id_dept' => $id_dept]);
+    $nom_dept = $stmtDept->fetchColumn();
 
-    // 2. Vérification si l'agent a déjà pointé aujourd'hui
-    $stmtCheckPresence = $db->prepare("SELECT * FROM presence WHERE id_agent = :id AND date_jour = CURDATE()");
+    // 2. Récupérer le salaire fixe de base pour l'affichage
+    $stmtSal = $db->prepare("SELECT sal_base_agent FROM agent WHERE id_agent = :id_agent");
+    $stmtSal->execute([':id_agent' => $id_agent]);
+    $salaire_base = $stmtSal->fetchColumn();
+
+    // 3. Vérification si l'agent a déjà émargé aujourd'hui (sans id_pres)
+    $stmtCheckPresence = $db->prepare("SELECT COUNT(*) FROM presence WHERE id_agent = :id AND date_jour = CURDATE()");
     $stmtCheckPresence->execute([':id' => $id_agent]);
-    $deja_pointe = $stmtCheckPresence->fetch() ? true : false;
+    $deja_pointe = ($stmtCheckPresence->fetchColumn() > 0) ? true : false;
 
-    // 3. Récupération des messages selon la portée réelle de vos tables
+    // 4. Récupération des messages selon le filtrage de vos tables réelles
     $stmtMessages = $db->prepare("
         SELECT m.*, a.nom_agent as expediteur 
         FROM message m 
@@ -49,280 +52,106 @@ try {
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BIOGAZELCO — Espace Agent</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
-            --brand-primary: #0f172a;
-            --brand-accent: #10b981;
-            --bg-muted: #f8fafc;
+            --brand-primary: #10b981;
+            --brand-dark: #0f172a;
+            --bg-light: #f8fafc;
             --border-color: #e2e8f0;
         }
-
-        body {
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            background-color: var(--bg-muted);
-            color: #1e293b;
-            margin: 0;
-            padding: 0;
-        }
-
-        /* Topbar Privée */
-        .dashboard-navbar {
-            background-color: white;
-            padding: 15px 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .user-profile-info {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .avatar-circle {
-            width: 40px;
-            height: 40px;
-            background-color: #e2e8f0;
-            color: var(--brand-primary);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-        }
-
-        .btn-logout {
-            color: #ef4444;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        /* Layout Grid */
-        .dashboard-container {
-            max-width: 1240px;
-            margin: 40px auto;
-            padding: 0 20px;
-            display: grid;
-            grid-template-columns: 1fr 2fr;
-            gap: 30px;
-        }
-
-        @media (max-width: 968px) {
-            .dashboard-container { grid-template-columns: 1fr; }
-        }
-
-        .card {
-            background: white;
-            border-radius: 20px;
-            border: 1px solid var(--border-color);
-            padding: 25px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.01);
-            margin-bottom: 30px;
-        }
-
-        .card-title {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--brand-primary);
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        /* Widgets de données */
-        .stat-box {
-            background: #f1f5f9;
-            padding: 15px;
-            border-radius: 12px;
-            margin-bottom: 15px;
-        }
-
-        .stat-label { font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; }
-        .stat-value { font-size: 20px; font-weight: 700; color: var(--brand-primary); margin-top: 5px; }
-
-        /* Module de pointage */
-        .btn-attendance {
-            width: 100%;
-            padding: 14px;
-            border-radius: 12px;
-            font-weight: 600;
-            font-size: 15px;
-            border: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-attendance.success { background-color: rgba(16, 185, 129, 0.1); color: var(--brand-accent); cursor: not-allowed; }
-        .btn-attendance.action { background-color: var(--brand-accent); color: white; }
-        .btn-attendance.action:hover { background-color: #059669; }
-
-        /* Messagerie Interne */
-        .chat-input-area {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 25px;
-        }
-
-        .chat-input {
-            flex-grow: 1;
-            padding: 12px 16px;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            font-size: 14px;
-        }
-
-        .chat-input:focus { outline: none; border-color: var(--brand-accent); }
-
-        .chat-select {
-            padding: 12px;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            background: white;
-            font-size: 14px;
-        }
-
-        .btn-send {
-            background-color: var(--brand-primary);
-            color: white;
-            border: none;
-            padding: 0 20px;
-            border-radius: 12px;
-            cursor: pointer;
-        }
-
-        .message-list {
-            max-height: 400px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .message-item {
-            background: #f8fafc;
-            padding: 15px;
-            border-radius: 14px;
-            border-left: 4px solid #cbd5e1;
-        }
-
-        .message-item.dept { border-left-color: #3b82f6; background: #f0f7ff; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: var(--bg-light); margin: 0; padding: 20px; color: var(--brand-dark); }
+        .dashboard-container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 2fr; gap: 25px; margin-top: 20px; }
+        .header-panel { background: white; padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border-color); }
+        .card { background: white; padding: 25px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.01); }
+        .btn { display: inline-block; width: 100%; padding: 12px; text-align: center; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; text-decoration: none; transition: all 0.2s; }
+        .btn-primary { background: var(--brand-primary); color: white; }
+        .btn-secondary { background: #edf2f7; color: var(--brand-dark); border: 1px solid var(--border-color); }
+        .btn-disabled { background: #cbd5e1; color: #64748b; cursor: not-allowed; }
+        .btn-danger { background: #ef4444; color: white; width: auto; padding: 8px 16px; }
+        .message-item { background: #f1f5f9; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #94a3b8; }
+        .message-item.dept { border-left-color: #3b82f6; background: #eff6ff; }
         .message-item.solo { border-left-color: #a855f7; background: #faf5ff; }
-
-        .message-meta {
-            display: flex;
-            justify-content: space-between;
-            font-size: 12px;
-            color: #64748b;
-            margin-bottom: 6px;
-            font-weight: 500;
-        }
-
-        .message-text { font-size: 14px; line-height: 1.5; color: #334155; }
+        .message-meta { display: flex; justify-content: space-between; font-size: 12px; color: #64748b; margin-bottom: 5px; }
+        .chat-input-box { display: flex; gap: 10px; margin-bottom: 20px; }
+        textarea { flex: 1; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; resize: none; font-family: inherit; }
+        select { padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-family: inherit; }
     </style>
 </head>
 <body>
 
-    <!-- Barre de Navigation Privée -->
-    <header class="dashboard-navbar">
-        <div class="user-profile-info">
-            <div class="avatar-circle"><?php echo strtoupper(substr($nom_agent, 0, 2)); ?></div>
-            <div>
-                <h2 style="font-size: 16px; margin: 0; font-weight: 700;"><?php echo htmlspecialchars($nom_agent); ?></h2>
-                <span style="font-size: 12px; color: #64748b; font-weight: 500;"><?php echo htmlspecialchars($agentInfo['nom_dept']); ?></span>
-            </div>
-        </div>
-        <a href="deconnexion.php" class="btn-logout"><i class="fa-solid fa-arrow-right-from-bracket"></i> Déconnexion</a>
-    </header>
+<div class="header-panel">
+    <div>
+        <h2 style="margin: 0;"><?php echo htmlspecialchars($nom_agent); ?></h2>
+        <small style="color: #64748b; font-weight: 500;"><?php echo htmlspecialchars($nom_dept); ?></small>
+    </div>
+    <a href="deconnexion.php" class="btn btn-danger">Déconnexion</a>
+</div>
 
-    <div class="dashboard-container">
-        
-        <!-- COLONNE GAUCHE : Statuts & Pointage -->
-        <div>
-            <div class="card">
-                <h3 class="card-title"><i class="fa-solid fa-user-check"></i> Pointage Quotidien</h3>
-                <?php if ($deja_pointe): ?>
-                    <button class="btn-attendance success" disabled>
-                        <i class="fa-solid fa-circle-check"></i> Présence enregistrée aujourd'hui
-                    </button>
-                <?php else: ?>
-                    <form action="gestion_jour.php" method="POST">
-                        <input type="hidden" name="action" value="pointer">
-                        <button type="submit" class="btn-attendance action">
-                            <i class="fa-solid fa-fingerprint"></i> Signaler ma présence
-                        </button>
-                    </form>
-                <?php endif; ?>
-            </div>
-
-            <div class="card">
-                <h3 class="card-title"><i class="fa-solid fa-wallet"></i> Situation Financière</h3>
-                <div class="stat-box">
-                    <div class="stat-label">Salaire de Base Fixe</div>
-                    <div class="stat-value"><?php echo number_format($agentInfo['sal_base_agent'], 2, ',', ' '); ?> USD</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-label">Salaire au Prorata Actuel</div>
-                    <!-- Calculé et actualisé dynamiquement par le script de calcul -->
-                    <div class="stat-value" style="color: var(--brand-accent);">
-                        <a href="calcul_salaires.php" style="text-decoration: none; color: inherit;">Consulter ma fiche de paie</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- COLONNE DROITE : Messagerie d'Entreprise Filtrée -->
+<div class="dashboard-container">
+    <div style="display: flex; flex-direction: column; gap: 25px;">
         <div class="card">
-            <h3 class="card-title"><i class="fa-solid fa-comments"></i> Fil de Discussion Sécurisé</h3>
-            
-            <!-- Formulaire d'envoi de message -->
-            <form action="chat_moteur.php" method="POST" class="chat-input-area">
-                <input type="text" name="texte_msg" class="chat-input" placeholder="Écrivez votre message interne ici..." required>
-                <select name="portee_msg" class="chat-select">
+            <h3>Pointage Quotidien</h3>
+            <form action="gestion_jour.php" method="POST">
+                <input type="hidden" name="action" value="pointer">
+                <?php if ($deja_pointe): ?>
+                    <button type="button" class="btn btn-disabled" disabled>✓ Présence signalée aujourd'hui</button>
+                <?php else: ?>
+                    <button type="submit" class="btn btn-primary">Signaler ma présence</button>
+                <?php endif; ?>
+            </form>
+        </div>
+
+        <div class="card">
+            <h3>Situation Financière</h3>
+            <p style="font-size: 14px; color: #64748b; margin-bottom: 5px;">SALAIRE DE BASE FIXE</p>
+            <strong style="font-size: 24px;"><?php echo number_format($salaire_base, 2, ',', ' '); ?> USD</strong>
+            <div style="margin-top: 20px;">
+                <a href="calcul_salaires.php" class="btn btn-secondary">Consulter ma fiche de paie</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Fil de Discussion Sécurisé</h3>
+        
+        <form action="chat_moteur.php" method="POST">
+            <input type="hidden" name="action" value="envoyer">
+            <div class="chat-input-box">
+                <textarea name="contenu_msg" placeholder="Écrivez votre message interne ici..." rows="2" required></textarea>
+                <select name="portee_msg">
                     <option value="tous">Tous</option>
                     <option value="departement">Mon Département</option>
                 </select>
-                <button type="submit" class="btn-send"><i class="fa-regular fa-paper-plane"></i></button>
-            </form>
-
-            <!-- Liste des messages reçus -->
-            <div class="message-list">
-                <?php if (empty($messages)): ?>
-                    <p style="text-align: center; color: #64748b; font-size: 14px; padding: 20px;">Aucun message dans votre flux actuel.</p>
-                <?php else: ?>
-                    <?php foreach ($messages as $msg): ?>
-                        <?php 
-                            // Classe de style en fonction de la portée du message
-                            $classe_portee = '';
-                            if ($msg['portee_msg'] === 'departement') $classe_portee = 'dept';
-                            if ($msg['portee_msg'] === 'solo') $classe_portee = 'solo';
-                        ?>
-                        <div class="message-item <?php echo $classe_portee; ?>">
-                            <div class="message-meta">
-                                <span style="font-weight: 700; color: var(--brand-primary);"><?php echo htmlspecialchars($msg['expediteur']); ?></span>
-                                <span><?php echo date('d/m H:i', strtotime($msg['date_envoi'])); ?></span>
-                            </div>
-                            <div class="message-text"><?php echo htmlspecialchars($msg['texte_msg']); ?></div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
+                <button type="submit" class="btn btn-primary" style="width: auto; padding: 0 20px;">Envoyer</button>
             </div>
-        </div>
+        </form>
 
+        <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 20px 0;">
+
+        <div class="message-list">
+            <?php if (empty($messages)): ?>
+                <p style="text-align: center; color: #64748b; font-size: 14px; padding: 20px;">Aucun message dans votre flux actuel.</p>
+            <?php else: ?>
+                <?php foreach ($messages as $msg): ?>
+                    <?php 
+                        $classe_portee = '';
+                        if ($msg['portee_msg'] === 'departement') $classe_portee = 'dept';
+                        if ($msg['portee_msg'] === 'solo') $classe_portee = 'solo';
+                    ?>
+                    <div class="message-item <?php echo $classe_portee; ?>">
+                        <div class="message-meta">
+                            <span style="font-weight: 700; color: #10b981;"><?php echo htmlspecialchars($msg['expediteur']); ?></span>
+                            <span><?php echo date('d/m H:i', strtotime($msg['date_envoi_msg'])); ?></span>
+                        </div>
+                        <div class="message-text"><?php echo htmlspecialchars($msg['contenu_msg']); ?></div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
     </div>
+</div>
 
 </body>
 </html>

@@ -1,37 +1,34 @@
 <?php
 require_once 'config.php';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = filter_var(trim($_POST['email']), FILTER_VALIDATE_EMAIL);
-    $pwd = $_POST['password'];
+// Sécurité : Seul l'administrateur peut valider ou débloquer un agent
+if (!isset($_SESSION['id_admin'])) {
+    die("Accès refusé. Autorisation administrative requise.");
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id_agent'])) {
+    $id_agent = (int)$_POST['id_agent'];
+    $action = isset($_POST['action']) ? $_POST['action'] : 'approuver';
 
     try {
-        $stmt = $db->prepare("SELECT * FROM agent WHERE email_agent = :email");
-        $stmt->execute([':email' => $email]);
-        $agent = $stmt->fetch();
+        // Détermination du statut_banni à appliquer
+        // 0 = Actif / Approuvé, 1 = Banni / Bloqué
+        $nouveau_statut = ($action === 'bloquer') ? 1 : 0;
 
-        if ($agent && password_verify($pwd, $agent['pwd_agent'])) {
-            
-            // ANALYSE DU STATUT REÇU
-            if ((int)$agent['statut_banni'] === 2) {
-                die("Accès refusé. Votre compte a été créé avec succès mais est toujours en attente d'approbation par l'administrateur.");
-            }
-            
-            if ((int)$agent['statut_banni'] === 1) {
-                die("Accès refusé. Ce compte a été banni ou suspendu par la direction.");
-            }
+        $stmt = $db->prepare("UPDATE agent SET statut_banni = :statut WHERE id_agent = :id");
+        $stmt->execute([
+            ':statut' => $nouveau_statut,
+            ':id'     => $id_agent
+        ]);
 
-            // Si statut_banni == 0, l'accès au Dashboard est validé
-            $_SESSION['id_agent'] = $agent['id_agent'];
-            $_SESSION['nom_agent'] = $agent['nom_agent'];
-            $_SESSION['id_dept'] = $agent['id_dept'];
-            
-            echo "Connexion réussie ! Redirection vers votre espace...";
-        } else {
-            echo "Identifiants de connexion incorrectes.";
-        }
+        // Redirection vers le cockpit admin après modification
+        header("Location: dashboard_admin.php");
+        exit;
+
     } catch (PDOException $e) {
-        die("Erreur d'authentification : " . $e->getMessage());
+        die("Erreur lors de la modification du statut de l'agent : " . $e->getMessage());
     }
+} else {
+    header("Location: dashboard_admin.php");
+    exit;
 }
-?>

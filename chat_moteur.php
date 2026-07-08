@@ -16,11 +16,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     // Nettoyage et sécurisation des entrées contre les injections de scripts (Failles XSS)
     $contenu_msg = htmlspecialchars(trim($_POST['contenu_msg']), ENT_QUOTES, 'UTF-8');
-    $portee_msg  = $_POST['portee_msg']; // 'Tous', 'Dept', 'Solo'
+    
+    // Forcer la portée en minuscules pour s'aligner sur la BDD ('tous', 'departement', 'solo')
+    $portee_msg  = strtolower(trim($_POST['portee_msg'])); 
     
     // Initialisation des variables de routage optionnelles
-    $id_dept_destinataire = (!empty($_POST['id_dept_destinataire']) && $portee_msg === 'Dept') ? (int)$_POST['id_dept_destinataire'] : null;
-    $id_agent_destinataire = (!empty($_POST['id_agent_destinataire']) && $portee_msg === 'Solo') ? (int)$_POST['id_agent_destinataire'] : null;
+    $id_dept_destinataire = (!empty($_POST['id_dept_destinataire']) && $portee_msg === 'departement') ? (int)$_POST['id_dept_destinataire'] : null;
+    $id_agent_destinataire = (!empty($_POST['id_agent_destinataire']) && $portee_msg === 'solo') ? (int)$_POST['id_agent_destinataire'] : null;
 
     if (empty($contenu_msg)) {
         die(json_encode(["status" => "error", "message" => "Le contenu du message ne peut pas être vide."]));
@@ -59,12 +61,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 SELECT m.*, a.nom_agent AS nom_expediteur 
                 FROM message m
                 JOIN agent a ON m.id_agent_expediteur = a.id_agent
-                ORDER BY m.date_envoi_msg ASC
+                ORDER BY m.id_msg ASC
             ");
             $messages = $stmtFetch->fetchAll();
         } 
-        // Si c'est un Agent, il ne voit QUE les messages globaux ('Tous'), 
-        // ceux de son propre département, ou les messages 'Solo' qui le concernent (émis ou reçus)
+        // Si c'est un Agent, il ne voit QUE les messages globaux ('tous'), 
+        // ceux de son propre département, ou les messages 'solo' qui le concernent (émis ou reçus)
         else {
             $id_dept_agent = (int)$_SESSION['id_dept']; // Récupéré lors de sa connexion
             
@@ -72,10 +74,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 SELECT m.*, a.nom_agent AS nom_expediteur 
                 FROM message m
                 JOIN agent a ON m.id_agent_expediteur = a.id_agent
-                WHERE m.portee_msg = 'Tous'
-                   OR (m.portee_msg = 'Dept' AND m.id_dept_destinataire = :id_dept)
-                   OR (m.portee_msg = 'Solo' AND (m.id_agent_destinataire = :id_current OR m.id_agent_expediteur = :id_current))
-                ORDER BY m.date_envoi_msg ASC
+                WHERE m.portee_msg = 'tous'
+                   OR (m.portee_msg = 'departement' AND m.id_dept_destinataire = :id_dept)
+                   OR (m.portee_msg = 'solo' AND (m.id_agent_destinataire = :id_current OR m.id_agent_expediteur = :id_current))
+                ORDER BY m.id_msg ASC
             ");
             
             $stmtFetch->execute([
@@ -85,11 +87,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $messages = $stmtFetch->fetchAll();
         }
 
-        // Les messages sont prêts à être injectés dynamiquement dans l'interface du Chat
-        // (Pour une intégration propre en JavaScript/AJAX, on peut faire un echo json_encode($messages);)
+        // Pour que l'interface puisse lire les messages en AJAX
+        echo json_encode($messages);
+        exit;
 
     } catch (PDOException $e) {
-        die("Erreur lors de la récupération des messages : " . $e->getMessage());
+        die(json_encode(["status" => "error", "message" => "Erreur de récupération : " . $e->getMessage()]));
     }
 }
 ?>
