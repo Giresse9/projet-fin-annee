@@ -1,7 +1,7 @@
 <?php
 require_once 'config.php';
 
-$num_whatsapp_admin = "243812345678"; // Ton numéro admin WhatsApp
+$num_whatsapp_admin = "243856321879"; // Ton numéro admin WhatsApp
 
 try {
     $produits = $db->query("SELECT * FROM catalogue ORDER BY id_prod DESC")->fetchAll();

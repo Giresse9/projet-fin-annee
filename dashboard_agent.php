@@ -57,7 +57,7 @@ try {
     $stmtPointeToday->execute([':id' => $id_agent]);
     $a_deja_pointe_aujourdhui = $stmtPointeToday->fetch(PDO::FETCH_ASSOC)['checked'] ?? 0;
 
-    // Récupération des 3 dernières directives de l'admin
+    // Récupération des 5 dernières directives de l'admin
     $directives = $db->prepare("
         SELECT * FROM message 
         WHERE id_agent_destinataire = :id_agent 
